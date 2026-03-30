@@ -140,11 +140,11 @@ def fetch_data(
 # Single Energy Recode
 # ─────────────────────────────────────────────
 
-def single_energy_record(cid):
+def single_energy_record(cid,indicator_type = 0):
     da_cid     = get_region_catalog_id(cid)
     regions    = get_regions(da_cid)
     indicators = get_indicators(cid)
-    raw        = fetch_data(cid, [indicators[0]["id"]], regions, ["202503MM-202602MM"])    
+    raw        = fetch_data(cid, [indicators[indicator_type]["id"]], regions, ["202508MM-202602MM"])    
     return raw
 
 
