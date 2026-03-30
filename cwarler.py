@@ -74,7 +74,7 @@ def get_region_catalog_id(indicator_cid: str, use_proxy: bool = False) -> str:
     time.sleep(REQUEST_DELAY)
 
     data = res.json().get("data", [])
-    print(data)
+    # print(data)
     for item in data:
         # 'National Total' is level 1, no children — use it for all provinces
         if "children" not in item:
