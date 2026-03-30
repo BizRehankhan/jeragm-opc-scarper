@@ -1,5 +1,6 @@
 import time
 import requests
+from proxy import get_proxy, clear_pool
 
 BASE_URL = "https://data.stats.gov.cn/dg/website/publicrelease/en/web/external"
 HEADERS = {
@@ -10,6 +11,24 @@ HEADERS = {
 }
 REQUEST_DELAY = 1.0
 
+
+def _request(method: str, url: str, use_proxy: bool = False, retries: int = 3, **kwargs):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            proxy = get_proxy() if use_proxy else None
+            timeout = 30 * (attempt + 1)
+            resp = requests.request(method, url, headers=HEADERS, proxies=proxy, timeout=timeout, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last_err = e
+            if use_proxy:
+                clear_pool()
+            time.sleep(2 ** attempt)
+    raise last_err
+
+
 session = requests.Session()
 session.headers.update(HEADERS)
 
@@ -18,17 +37,16 @@ session.headers.update(HEADERS)
 # STEP 1: TREE — get all leaf catalog nodes
 # ─────────────────────────────────────────────
 
-def get_tree(pid: str, code: int = 4) -> list:
+def get_tree(pid: str, code: int = 4, use_proxy: bool = False) -> list:
     url = f"{BASE_URL}/new/queryIndexTreeAsync"
-    res = session.get(url, params={"pid": pid, "code": code})
-    res.raise_for_status()
+    res = _request("GET", url, use_proxy=use_proxy, params={"pid": pid, "code": code})
     time.sleep(REQUEST_DELAY)
     return res.json().get("data", [])
 
 
-def get_leaf_catalogs(pid: str) -> list[dict]:
+def get_leaf_catalogs(pid: str, use_proxy: bool = False) -> list[dict]:
     """Recursively walk tree until isLeaf=True."""
-    nodes = get_tree(pid)
+    nodes = get_tree(pid, use_proxy=use_proxy)
     leaves = []
     for node in nodes:
         if node.get("isLeaf"):
@@ -38,7 +56,7 @@ def get_leaf_catalogs(pid: str) -> list[dict]:
                 "pid":  node["treeinfo_pid"],
             })
         else:
-            leaves.extend(get_leaf_catalogs(node["_id"]))
+            leaves.extend(get_leaf_catalogs(node["_id"], use_proxy=use_proxy))
     return leaves
 
 
@@ -46,14 +64,13 @@ def get_leaf_catalogs(pid: str) -> list[dict]:
 # STEP 2+3: REGIONS — get all provinces
 # ─────────────────────────────────────────────
 
-def get_region_catalog_id(indicator_cid: str) -> str:
+def get_region_catalog_id(indicator_cid: str, use_proxy: bool = False) -> str:
     """
     getDaCatalogTreeByIndicatorCid → find the 'National Total' catalog id
     which contains all provinces.
     """
     url = f"{BASE_URL}/getDaCatalogTreeByIndicatorCid"
-    res = session.get(url, params={"indicatorCid": indicator_cid})
-    res.raise_for_status()
+    res = _request("GET", url, use_proxy=use_proxy, params={"indicatorCid": indicator_cid})
     time.sleep(REQUEST_DELAY)
 
     data = res.json().get("data", [])
@@ -66,11 +83,10 @@ def get_region_catalog_id(indicator_cid: str) -> str:
     return data[0]["_id"] if data else ""
 
 
-def get_regions(da_cid: str) -> list[dict]:
+def get_regions(da_cid: str, use_proxy: bool = False) -> list[dict]:
     """getDasByDaCatalogId → list of {text, value} for all provinces."""
     url = f"{BASE_URL}/getDasByDaCatalogId"
-    res = session.get(url, params={"daCid": da_cid})
-    res.raise_for_status()
+    res = _request("GET", url, use_proxy=use_proxy, params={"daCid": da_cid})
     time.sleep(REQUEST_DELAY)
 
     return [
@@ -83,14 +99,13 @@ def get_regions(da_cid: str) -> list[dict]:
 # STEP 4: INDICATORS — get indicator IDs for a catalog
 # ─────────────────────────────────────────────
 
-def get_indicators(cid: str, dt: str = "2025-2026") -> list[dict]:
+def get_indicators(cid: str, dt: str = "2025-2026", use_proxy: bool = False) -> list[dict]:
     """
     queryIndicatorsByCid → list of indicators with their _id fields.
     Returns: [{"id": "...", "name": "...", "unit": "..."}]
     """
     url = f"{BASE_URL}/new/queryIndicatorsByCid"
-    res = session.get(url, params={"cid": cid, "dt": dt, "name": ""})
-    res.raise_for_status()
+    res = _request("GET", url, use_proxy=use_proxy, params={"cid": cid, "dt": dt, "name": ""})
     time.sleep(REQUEST_DELAY)
 
     items = res.json().get("data", {}).get("list", [])
@@ -114,6 +129,7 @@ def fetch_data(
     regions: list[dict],
     dts: list[str],
     root_id: str = "f4c6cd795fea436c807163397dd36b98",
+    use_proxy: bool = False,
 ) -> dict:
     """
     POST getEsDataByCidAndDt → actual time-series data.
@@ -130,8 +146,7 @@ def fetch_data(
         "dts":          dts,
         "rootId":       root_id,
     }
-    res = session.post(url, json=payload)
-    res.raise_for_status()
+    res = _request("POST", url, use_proxy=use_proxy, json=payload)
     time.sleep(REQUEST_DELAY)
     return res.json()
 
@@ -140,11 +155,11 @@ def fetch_data(
 # Single Energy Recode
 # ─────────────────────────────────────────────
 
-def single_energy_record(cid,indicator_type = 0):
-    da_cid     = get_region_catalog_id(cid)
-    regions    = get_regions(da_cid)
-    indicators = get_indicators(cid)
-    raw        = fetch_data(cid, [indicators[indicator_type]["id"]], regions, ["202508MM-202602MM"])    
+def single_energy_record(cid, indicator_type=0, use_proxy: bool = False):
+    da_cid     = get_region_catalog_id(cid, use_proxy=use_proxy)
+    regions    = get_regions(da_cid, use_proxy=use_proxy)
+    indicators = get_indicators(cid, use_proxy=use_proxy)
+    raw        = fetch_data(cid, [indicators[indicator_type]["id"]], regions, ["202508MM-202602MM"], use_proxy=use_proxy)
     return raw
 
 
